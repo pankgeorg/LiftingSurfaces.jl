@@ -1,0 +1,19 @@
+name = "LiftingSurfaces"
+uuid = "9a0f5e22-3b8b-4d77-9b13-6e6f7f8e9d11"
+authors = ["pankgeorg"]
+version = "0.1.0"
+
+[deps]
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+VortexLattice = "7a09bdf8-3785-11e9-0bdd-57d0ec69af3f"
+
+[compat]
+StaticArrays = "1"
+VortexLattice = "0.1, 0.2"
+julia = "1.10"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
