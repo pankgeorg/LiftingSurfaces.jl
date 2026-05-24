@@ -55,6 +55,25 @@ using LiftingSurfaces
         @test isapprox(sum(@view f[:, :, :, 3]),  0.2f0; atol=1e-5)
     end
 
+    @testset "trilinear_inflow sanity" begin
+        using StaticArrays: SVector
+        sz = (16, 16, 16)
+        # Uniform u in +x: all (x, y, z) should return (1, 0, 0).
+        u = zeros(Float32, sz..., 3)
+        u[:, :, :, 1] .= 1f0
+        inflow = trilinear_inflow(u)
+        v = inflow(5.0, 7.0, 4.0)
+        @test isapprox(v[1], 1f0; atol=1e-5)
+        @test isapprox(v[2], 0f0; atol=1e-5)
+        @test isapprox(v[3], 0f0; atol=1e-5)
+        # Linear-in-x field: u_x(I[1]) = I[1] - 1.5
+        for I in CartesianIndices((size(u, 1), size(u, 2), size(u, 3)))
+            u[I, 1] = I[1] - 1.5
+        end
+        inflow2 = trilinear_inflow(u)
+        @test isapprox(inflow2(3.7, 8.0, 8.0)[1], 3.7f0; atol=1e-3)
+    end
+
     @testset "smear_force! peaks at the closest cell" begin
         using StaticArrays: SVector
         sz = (16, 16, 16)

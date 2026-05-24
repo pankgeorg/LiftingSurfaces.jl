@@ -6,7 +6,8 @@ using VortexLattice: wing_to_grid, grid_to_surface_panels, System, Reference,
     Wind, Body, Cosine, Uniform, AbstractSpacing
 using StaticArrays: SVector
 
-export Rudder, rudder_forces, BladedRotor, rotor_forces, smear_force!
+export Rudder, rudder_forces, BladedRotor, rotor_forces, smear_force!,
+       trilinear_inflow
 
 # ---------------------------------------------------------------------------
 # Rudder
@@ -256,6 +257,56 @@ function smear_force!(f::AbstractArray{T, N}, force, x_world;
         end
     end
     return f
+end
+
+"""
+    trilinear_inflow(u_field; offset=SVector(0,0,0))
+
+Build an `(x,y,z) -> SVector{3}` closure that returns the local
+velocity at world position `(x,y,z)` by trilinear interpolation of
+the WaterLily face-staggered velocity array `u_field` (shape `(N...,
+D)`). World position is in WaterLily cell-coordinates; pass `offset`
+to translate (e.g. world ↔ rudder-frame).
+
+Use as VortexLattice's `additional_velocity` argument:
+
+```julia
+u_at = trilinear_inflow(sim.flow.u)
+r = rudder_forces(rudder, δ, V∞; inflow=u_at)
+```
+
+The returned velocity is the **perturbation** on top of the freestream
+— *not* the absolute velocity — because that's the VortexLattice
+convention. If you want the absolute velocity to be `u_field`, set the
+VLM freestream Vinf to 0 (rare in ship CFD; usually freestream is V∞
+and the WaterLily field is the perturbation w.r.t. V∞).
+"""
+function trilinear_inflow(u_field::AbstractArray{T, N}; offset=nothing) where {T, N}
+    D = N - 1
+    sz = ntuple(d -> size(u_field, d), D)
+    off = offset === nothing ? SVector(ntuple(_ -> zero(T), D)...) : offset
+    return (x, y, z) -> begin
+        # Pull the (x,y,z) into cell-index coordinates with offset applied.
+        # World position p in cell-units; cell I has centre at I - 1.5.
+        # So fractional cell-index = p + 1.5.
+        p = (T(x), T(y), T(z)) .+ Tuple(off)
+        idx = ntuple(d -> p[d] + T(1.5), D)
+        # Clamp to interior so we don't sample ghosts.
+        i = ntuple(d -> clamp(floor(Int, idx[d]), 2, sz[d] - 2), D)
+        fr = ntuple(d -> idx[d] - i[d], D)
+        # Trilinear over 8 corners (3D only — generic-D is a small loop).
+        u = SVector{D, T}(ntuple(D) do d
+            v = zero(T)
+            for k in 0:1, j in 0:1, ii in 0:1
+                w = (ii == 0 ? (one(T) - fr[1]) : fr[1]) *
+                    (j  == 0 ? (one(T) - fr[2]) : fr[2]) *
+                    (k  == 0 ? (one(T) - fr[3]) : fr[3])
+                @inbounds v += w * u_field[i[1] + ii, i[2] + j, i[3] + k, d]
+            end
+            v
+        end)
+        return u
+    end
 end
 
 end # module
