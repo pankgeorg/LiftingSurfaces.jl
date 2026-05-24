@@ -62,7 +62,7 @@ using LiftingSurfaces
         u = zeros(Float32, sz..., 3)
         u[:, :, :, 1] .= 1f0
         inflow = trilinear_inflow(u)
-        v = inflow(5.0, 7.0, 4.0)
+        v = inflow(SVector(5.0, 7.0, 4.0))
         @test isapprox(v[1], 1f0; atol=1e-5)
         @test isapprox(v[2], 0f0; atol=1e-5)
         @test isapprox(v[3], 0f0; atol=1e-5)
@@ -71,7 +71,7 @@ using LiftingSurfaces
             u[I, 1] = I[1] - 1.5
         end
         inflow2 = trilinear_inflow(u)
-        @test isapprox(inflow2(3.7, 8.0, 8.0)[1], 3.7f0; atol=1e-3)
+        @test isapprox(inflow2(SVector(3.7, 8.0, 8.0))[1], 3.7f0; atol=1e-3)
     end
 
     @testset "smear_force! peaks at the closest cell" begin

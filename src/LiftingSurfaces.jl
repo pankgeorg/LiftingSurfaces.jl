@@ -285,11 +285,10 @@ function trilinear_inflow(u_field::AbstractArray{T, N}; offset=nothing) where {T
     D = N - 1
     sz = ntuple(d -> size(u_field, d), D)
     off = offset === nothing ? SVector(ntuple(_ -> zero(T), D)...) : offset
-    return (x, y, z) -> begin
-        # Pull the (x,y,z) into cell-index coordinates with offset applied.
-        # World position p in cell-units; cell I has centre at I - 1.5.
-        # So fractional cell-index = p + 1.5.
-        p = (T(x), T(y), T(z)) .+ Tuple(off)
+    return (xv) -> begin
+        # VortexLattice passes a single SVector{3} position.
+        # Pull it into cell-index coordinates with offset applied.
+        p = (T(xv[1]), T(xv[2]), T(xv[3])) .+ Tuple(off)
         idx = ntuple(d -> p[d] + T(1.5), D)
         # Clamp to interior so we don't sample ghosts.
         i = ntuple(d -> clamp(floor(Int, idx[d]), 2, sz[d] - 2), D)
