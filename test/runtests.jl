@@ -44,4 +44,30 @@ using LiftingSurfaces
         @test abs(r.η_VLM) < 10
     end
 
+    @testset "smear_force! conserves total force" begin
+        using StaticArrays: SVector
+        sz = (32, 32, 32)
+        f = zeros(Float32, sz..., 3)
+        force = SVector(1.0f0, -0.5f0, 0.2f0)
+        smear_force!(f, force, SVector(16f0, 16f0, 16f0); ε=2.0)
+        @test isapprox(sum(@view f[:, :, :, 1]),  1.0f0; atol=1e-5)
+        @test isapprox(sum(@view f[:, :, :, 2]), -0.5f0; atol=1e-5)
+        @test isapprox(sum(@view f[:, :, :, 3]),  0.2f0; atol=1e-5)
+    end
+
+    @testset "smear_force! peaks at the closest cell" begin
+        using StaticArrays: SVector
+        sz = (16, 16, 16)
+        f = zeros(Float32, sz..., 3)
+        force = SVector(1f0, 0f0, 0f0)
+        x_loc = SVector(8f0, 8f0, 8f0)
+        smear_force!(f, force, x_loc; ε=1.5)
+        i_peak = argmax(f[:, :, :, 1])
+        # Cell centre for index I = I - 1.5; for x_loc=8 nearest cells
+        # are I=9 (centre 7.5) or I=10 (centre 8.5).
+        @test i_peak[1] in (9, 10)
+        @test i_peak[2] in (9, 10)
+        @test i_peak[3] in (9, 10)
+    end
+
 end

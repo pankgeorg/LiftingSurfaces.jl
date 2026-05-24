@@ -3,7 +3,7 @@ module LiftingSurfaces
 using VortexLattice
 using StaticArrays: SVector
 
-export Rudder, rudder_forces, BladedRotor, rotor_forces
+export Rudder, rudder_forces, BladedRotor, rotor_forces, smear_force!
 
 # ---------------------------------------------------------------------------
 # Rudder
@@ -194,6 +194,65 @@ function rotor_forces(rotor::BladedRotor{T}, V∞::Real, Ω::Real;
     η_VLM  = (CT * V∞) / (Ω * CQ * rotor.R + eps(T))   # ≈ propulsive eff.
 
     return (; thrust, torque, CT, CQ, η_VLM)
+end
+
+# ---------------------------------------------------------------------------
+# Eulerian projection — smear a point/line force onto a 3D grid
+# ---------------------------------------------------------------------------
+
+"""
+    smear_force!(f, force, x_world; ε=2.0)
+
+Add `force::SVector{D}` to the WaterLily face-staggered force array
+`f` (shape `(N..., D)`) as an isotropic 3D Gaussian centred at world
+position `x_world::SVector{D}` with width `ε` cells. The Gaussian is
+normalised so the integrated added force matches `force` exactly to
+the discrete grid (no leakage at the truncation radius).
+
+Use this to project the lifting-surface forces returned by VLM back
+into the WaterLily flow.f as a body force, matching the regularised-
+delta convention used in actuator-line LES.
+
+`ε ≥ 2 Δx` is the customary rule for stable LES coupling. The
+function trims to a `[-3ε, +3ε]` box around `x_world` (≈ 99 % of
+mass) and renormalises so the in-box sum equals `force`.
+"""
+function smear_force!(f::AbstractArray{T, N}, force, x_world;
+                      ε::Real = 2.0) where {T, N}
+    D = N - 1
+    @assert length(force) == D
+    @assert length(x_world) == D
+    sz = ntuple(d -> size(f, d), D)
+    # Box: ±3ε around x_world (cell-units).
+    box_lo = ntuple(d -> max(1, floor(Int, x_world[d] - 3ε)),  D)
+    box_hi = ntuple(d -> min(sz[d], ceil(Int, x_world[d] + 3ε)), D)
+    # First pass: compute the kernel sum so we can normalise.
+    invε² = inv(T(ε^2))
+    box   = CartesianIndices(ntuple(d -> box_lo[d]:box_hi[d], D))
+    ksum  = zero(T)
+    @inbounds for I in box
+        r² = zero(T)
+        for d in 1:D
+            δ = (I[d] - T(1.5)) - T(x_world[d])
+            r² += δ*δ
+        end
+        ksum += exp(-r² * invε²)
+    end
+    ksum == 0 && return f
+    inv_ks = inv(ksum)
+    # Second pass: deposit the (force / ksum) × kernel into f.
+    @inbounds for I in box
+        r² = zero(T)
+        for d in 1:D
+            δ = (I[d] - T(1.5)) - T(x_world[d])
+            r² += δ*δ
+        end
+        w = exp(-r² * invε²) * inv_ks
+        for d in 1:D
+            f[I, d] += T(force[d]) * w
+        end
+    end
+    return f
 end
 
 end # module
