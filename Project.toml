@@ -9,7 +9,7 @@ VortexLattice = "7a09bdf8-3785-11e9-0bdd-57d0ec69af3f"
 
 [compat]
 StaticArrays = "1"
-VortexLattice = "0.1, 0.2"
+VortexLattice = "0.2"
 julia = "1.10"
 
 [extras]

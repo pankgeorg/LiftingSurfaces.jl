@@ -1,6 +1,9 @@
 module LiftingSurfaces
 
 using VortexLattice
+using VortexLattice: wing_to_grid, grid_to_surface_panels, System, Reference,
+    Freestream, steady_analysis!, body_forces, far_field_drag,
+    Wind, Body, Cosine, Uniform, AbstractSpacing
 using StaticArrays: SVector
 
 export Rudder, rudder_forces, BladedRotor, rotor_forces, smear_force!
