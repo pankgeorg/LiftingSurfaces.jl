@@ -108,6 +108,25 @@ using LiftingSurfaces
         end
     end
 
+    @testset "Rudder responds to inflow perturbation" begin
+        # Pass a non-zero inflow perturbation and confirm the rudder
+        # force changes from the freestream-only baseline. Specifically:
+        # adding +y perturbation at the rudder should change the
+        # apparent angle of attack, so CL must differ from the
+        # inflow=nothing case.
+        using StaticArrays: SVector
+        rudder = Rudder(; chord=1.0, span=2.0, ns=12, nc=6)
+        r_base = rudder_forces(rudder, deg2rad(5.0), 1.0)
+        # Constant +z perturbation reduces effective α — CL drops.
+        inflow_up = xv -> SVector(0.0, 0.0, 0.1)
+        r_up = rudder_forces(rudder, deg2rad(5.0), 1.0; inflow=inflow_up)
+        @test r_up.CL != r_base.CL
+        # Constant -z perturbation should push CL the other direction.
+        inflow_dn = xv -> SVector(0.0, 0.0, -0.1)
+        r_dn = rudder_forces(rudder, deg2rad(5.0), 1.0; inflow=inflow_dn)
+        @test (r_up.CL - r_base.CL) * (r_dn.CL - r_base.CL) < 0   # opposite signs
+    end
+
     @testset "smear_force! 2D" begin
         using StaticArrays: SVector
         sz = (24, 24)
