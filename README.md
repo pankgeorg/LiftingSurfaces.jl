@@ -114,7 +114,13 @@ or develop a thicker propeller model.
 $ julia +1.12 --project=. -e 'using Pkg; Pkg.test()'
 ```
 
-Currently 21 tests covering: rudder polar sign + magnitude,
-linear-range dCL/dα against rectangular-LLT, BladedRotor smoke,
-`smear_force!` force-conservation + peak, `trilinear_inflow`
-uniform + linear field recovery.
+Currently 37 tests covering:
+
+- Rudder polar sign + magnitude (symmetric in δ)
+- Linear-range dCL/dα against rectangular-AR=2 theory
+- Rudder responds to a non-zero inflow perturbation (the two-way
+  coupling smoke)
+- BladedRotor smoke at J=0.7
+- `smear_force!` per-component conservation across 3D + 2D
+- `smear_force!` peaks at the cell closest to the world position
+- `trilinear_inflow` uniform + linear field recovery (sub-cell)
