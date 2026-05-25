@@ -7,7 +7,7 @@ using VortexLattice: wing_to_grid, grid_to_surface_panels, System, Reference,
 using StaticArrays: SVector
 
 export Rudder, rudder_forces, BladedRotor, rotor_forces, smear_force!,
-       smear_torque!, trilinear_inflow
+       smear_torque!, smear_blades!, trilinear_inflow
 
 # ---------------------------------------------------------------------------
 # Rudder
@@ -310,6 +310,79 @@ function smear_torque!(f::AbstractArray{T, 4}, torque::Real,
         )
         x_point = c .+ T(R) .* r_hat
         smear_force!(f, F_tan .* t_hat, x_point; ε=ε)
+    end
+    return f
+end
+
+"""
+    smear_blades!(f, thrust, torque, center, axis, R, R_hub;
+                  N_blades=3, N_sections=4, ε=1.5)
+
+Spread `thrust` and `torque` across `N_blades × N_sections`
+deposition points arranged as radial blade lines around the rotor
+axis, instead of as a single point smear + a tangential ring.
+
+Each blade is a line at angular position `2π·k/N_blades`,
+`N_sections` evenly-spaced sections along its span from `R_hub` to
+`R`. At each section:
+
+  - axial force = uniform fraction `thrust / (N_blades·N_sections)`
+  - tangential force linear-in-r (canonical propeller loading),
+    normalised so the discrete `Σ(r × f_t)` matches `torque`
+
+Closer to an actuator-line method than a single-point smear; the
+distributed thrust footprint matches the blade swept area rather
+than a hot-spot at the centre. Use as a drop-in replacement for
+`smear_force!` + `smear_torque!` on BladedRotor's
+`(thrust, torque)` outputs.
+"""
+function smear_blades!(f::AbstractArray{T, 4}, thrust::Real, torque::Real,
+                       center, axis, R::Real, R_hub::Real;
+                       N_blades::Int = 3, N_sections::Int = 4,
+                       ε::Real = 1.5) where T
+    a = SVector{3, T}(axis[1], axis[2], axis[3])
+    a = a ./ sqrt(sum(abs2, a))
+    e1 = if abs(a[1]) < 0.9
+        SVector{3, T}(1, 0, 0) - (a[1]) .* a
+    else
+        SVector{3, T}(0, 1, 0) - (a[2]) .* a
+    end
+    e1 = e1 ./ sqrt(sum(abs2, e1))
+    e2 = SVector{3, T}(
+        a[2]*e1[3] - a[3]*e1[2],
+        a[3]*e1[1] - a[1]*e1[3],
+        a[1]*e1[2] - a[2]*e1[1],
+    )
+    c = SVector{3, T}(center[1], center[2], center[3])
+    # Per-blade axial thrust
+    f_axial_per_section = T(thrust) / T(N_blades * N_sections)
+    # Tangential force normalisation: ∑(r × f_t) = torque
+    # With f_t(r) = K·r over N_blades·N_sections sections each at r_k:
+    # ∑ r_k · K r_k = K · ∑ r_k² = torque ⇒ K = torque / ∑ r_k²
+    sum_r² = zero(T)
+    for k in 1:N_sections
+        r_k = T(R_hub) + (T(k) - T(0.5)) / T(N_sections) * T(R - R_hub)
+        sum_r² += r_k * r_k
+    end
+    K_τ = sum_r² > 0 ? T(torque) / (T(N_blades) * sum_r²) : zero(T)
+    # Deposit
+    for b in 0:N_blades-1
+        θ = T(2π * b / N_blades)
+        cθ, sθ = cos(θ), sin(θ)
+        # Blade radial direction at this θ; tangential = a × r_hat
+        r_hat = cθ .* e1 .+ sθ .* e2
+        t_hat = SVector{3, T}(
+            a[2]*r_hat[3] - a[3]*r_hat[2],
+            a[3]*r_hat[1] - a[1]*r_hat[3],
+            a[1]*r_hat[2] - a[2]*r_hat[1],
+        )
+        for k in 1:N_sections
+            r_k = T(R_hub) + (T(k) - T(0.5)) / T(N_sections) * T(R - R_hub)
+            pos = c .+ r_k .* r_hat
+            f_tan = K_τ * r_k
+            F = f_axial_per_section .* a .+ f_tan .* t_hat
+            smear_force!(f, F, pos; ε=ε)
+        end
     end
     return f
 end

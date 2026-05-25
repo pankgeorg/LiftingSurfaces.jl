@@ -127,6 +127,30 @@ using LiftingSurfaces
         @test (r_up.CL - r_base.CL) * (r_dn.CL - r_base.CL) < 0   # opposite signs
     end
 
+    @testset "smear_blades! sums to total thrust + torque" begin
+        using StaticArrays: SVector
+        sz = (48, 48, 48)
+        f = zeros(Float32, sz..., 3)
+        smear_blades!(f, 1.0, 0.4,
+                      SVector(24.0, 24.0, 24.0),
+                      SVector(1.0, 0.0, 0.0),
+                      8.0, 1.5;
+                      N_blades=3, N_sections=4, ε=1.5)
+        # Total axial force ≈ prescribed thrust
+        @test isapprox(sum(@view f[:, :, :, 1]), 1.0f0; atol=1e-3)
+        # No net side force in 3-blade symmetry
+        @test isapprox(sum(@view f[:, :, :, 2]), 0f0; atol=1e-3)
+        @test isapprox(sum(@view f[:, :, :, 3]), 0f0; atol=1e-3)
+        # Total moment about +x ≈ prescribed torque
+        Mx = 0.0
+        for i in 1:sz[1], j in 1:sz[2], k in 1:sz[3]
+            y = (j - 1.5) - 24.0
+            z = (k - 1.5) - 24.0
+            Mx += y * f[i, j, k, 3] - z * f[i, j, k, 2]
+        end
+        @test isapprox(Mx, 0.4; rtol=0.05)
+    end
+
     @testset "smear_torque! produces a moment, zero net force" begin
         using StaticArrays: SVector
         sz = (32, 32, 32)
