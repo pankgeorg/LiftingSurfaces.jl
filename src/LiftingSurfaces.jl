@@ -7,7 +7,7 @@ using VortexLattice: wing_to_grid, grid_to_surface_panels, System, Reference,
 using StaticArrays: SVector
 
 export Rudder, rudder_forces, BladedRotor, rotor_forces, smear_force!,
-       trilinear_inflow
+       smear_torque!, trilinear_inflow
 
 # ---------------------------------------------------------------------------
 # Rudder
@@ -262,6 +262,54 @@ function smear_force!(f::AbstractArray{T, N}, force, x_world;
             w = exp(-r² * inv2ε²) * inv_ks_d
             f[I, d] += T(force[d]) * w
         end
+    end
+    return f
+end
+
+"""
+    smear_torque!(f, torque, center, axis, R; N=8, ε=2.0)
+
+Deposit an axial torque `torque` (scalar, signed) about `axis` into
+the 3D face-staggered force array `f` as a ring of `N` tangential
+point-forces at radius `R` around `center`. The forces sum to zero
+(no net force) but produce a net moment of `torque` about `axis`.
+
+Use to add the propeller swirl to a thrust-only `smear_force!` call
+when the integrated demo wants both axial and rotational effects.
+"""
+function smear_torque!(f::AbstractArray{T, 4}, torque::Real,
+                       center, axis, R::Real;
+                       N::Int = 8, ε::Real = 2.0) where T
+    # Build an orthonormal basis (e1, e2) perpendicular to axis.
+    a = SVector{3, T}(axis[1], axis[2], axis[3])
+    a = a ./ sqrt(sum(abs2, a))
+    e1 = if abs(a[1]) < 0.9
+        SVector{3, T}(1, 0, 0) - (a[1]) .* a
+    else
+        SVector{3, T}(0, 1, 0) - (a[2]) .* a
+    end
+    e1 = e1 ./ sqrt(sum(abs2, e1))
+    e2 = SVector{3, T}(
+        a[2]*e1[3] - a[3]*e1[2],
+        a[3]*e1[1] - a[1]*e1[3],
+        a[1]*e1[2] - a[2]*e1[1],
+    )
+    # Each point gets F_tan such that ∑ r × F = torque ⇒ N · R · F_tan = torque.
+    F_tan = T(torque) / (T(N) * T(R))
+    c = SVector{3, T}(center[1], center[2], center[3])
+    for k in 0:N-1
+        θ = T(2π * k / N)
+        cθ, sθ = cos(θ), sin(θ)
+        # Radial direction at this θ
+        r_hat = cθ .* e1 .+ sθ .* e2
+        # Tangential direction: axis × r_hat
+        t_hat = SVector{3, T}(
+            a[2]*r_hat[3] - a[3]*r_hat[2],
+            a[3]*r_hat[1] - a[1]*r_hat[3],
+            a[1]*r_hat[2] - a[2]*r_hat[1],
+        )
+        x_point = c .+ T(R) .* r_hat
+        smear_force!(f, F_tan .* t_hat, x_point; ε=ε)
     end
     return f
 end

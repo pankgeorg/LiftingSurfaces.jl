@@ -127,6 +127,26 @@ using LiftingSurfaces
         @test (r_up.CL - r_base.CL) * (r_dn.CL - r_base.CL) < 0   # opposite signs
     end
 
+    @testset "smear_torque! produces a moment, zero net force" begin
+        using StaticArrays: SVector
+        sz = (32, 32, 32)
+        f = zeros(Float32, sz..., 3)
+        smear_torque!(f, 1.0, SVector(16.0, 16.0, 16.0),
+                      SVector(1.0, 0.0, 0.0), 4.0; N=8, ε=2.0)
+        # No net force (ring sums to zero)
+        @test isapprox(sum(@view f[:, :, :, 1]), 0f0; atol=1e-4)
+        @test isapprox(sum(@view f[:, :, :, 2]), 0f0; atol=1e-4)
+        @test isapprox(sum(@view f[:, :, :, 3]), 0f0; atol=1e-4)
+        # Net moment about +x ≈ 1.0
+        Mx = 0.0
+        for i in 1:sz[1], j in 1:sz[2], k in 1:sz[3]
+            y = (j - 1.5) - 16.0
+            z = (k - 1.5) - 16.0
+            Mx += y * f[i, j, k, 3] - z * f[i, j, k, 2]
+        end
+        @test isapprox(Mx, 1.0; rtol=0.05)
+    end
+
     @testset "smear_force! 2D" begin
         using StaticArrays: SVector
         sz = (24, 24)
