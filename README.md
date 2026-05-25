@@ -53,21 +53,27 @@ r  = rotor_forces(rotor, V∞, Ω)
 
 ```julia
 using WaterLily, LiftingSurfaces
+using StaticArrays: SVector
 
 sim = Simulation((128, 64, 32), (1f0, 0f0, 0f0), 32f0; T=Float32)
 rudder = Rudder(; chord=4.0, span=8.0)
 δ = deg2rad(10)
-rud_pos = (40f0, 32f0, 16f0)
+rud_pos = SVector(40f0, 32f0, 16f0)
 
 function rudder_udf(flow, t; kwargs...)
     # Two-way: sample WaterLily's local flow at panel control points.
     u_sample = trilinear_inflow(flow.u)
-    inflow = (xv) -> let v = u_sample(xv + SVector(rud_pos))
-        SVector(v[1] - 1f0, v[2], v[3])       # subtract V∞ — VL treats this as perturbation
+    inflow = (xv) -> let v = u_sample(SVector(xv[1] + rud_pos[1],
+                                              xv[2] + rud_pos[2],
+                                              xv[3] + rud_pos[3]))
+        # VortexLattice treats this as a perturbation on Vinf, so
+        # subtract Vinf=1 from the x-component.
+        SVector(v[1] - 1f0, v[2], v[3])
     end
     r = rudder_forces(rudder, δ, 1f0; inflow=inflow)
-    F = SVector(r.CD, r.CL, 0f0) .* (0.5 * 1f0^2 * rudder.chord * rudder.span)
-    smear_force!(flow.f, F, SVector(rud_pos); ε=2.0)
+    q = 0.5f0 * rudder.chord * rudder.span         # ρ=1, V=1
+    F = SVector(-r.CD * q, 0f0, r.CL * q)
+    smear_force!(flow.f, F, rud_pos; ε=2.0)
     return nothing
 end
 

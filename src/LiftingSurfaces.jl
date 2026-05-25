@@ -54,8 +54,8 @@ V∞ in the +x direction. Returns `(; CL, CD, CY, CM, sectional)`:
             the rudder; side-force on a horizontal-axis ship → yaw)
   * `CD`  — drag coefficient (along V∞)
   * `CY`  — side force in Body frame (y in VLM Body convention)
-  * `CM`  — moment coefficients (3-vector, about rudder root)
-  * `sectional` — per-strip Cf along the span (length ns)
+  * `CM`  — moment coefficients (3-vector, about the quarter-chord
+            reference position set in `Reference(...)`)
 
 `inflow(x,y,z)` may be passed to perturb the freestream with the
 WaterLily-side ambient flow (e.g. propeller race). It must return an
@@ -169,11 +169,12 @@ function rotor_forces(rotor::BladedRotor{T}, V∞::Real, Ω::Real;
     ratios = [ratio]
     for k in 1:rotor.N_blades - 1
         θ = T(2π * k / rotor.N_blades)
+        c, s = cos(θ), sin(θ)
         g = copy(grid_root)
-        @views for j in 1:size(g, 3), i in 1:size(g, 2)
+        @inbounds for j in 1:size(g, 3), i in 1:size(g, 2)
             y = g[2, i, j]; z = g[3, i, j]
-            g[2, i, j] = y * cos(θ) - z * sin(θ)
-            g[3, i, j] = y * sin(θ) + z * cos(θ)
+            g[2, i, j] = y * c - z * s
+            g[3, i, j] = y * s + z * c
         end
         push!(grids,  g)
         push!(ratios, ratio)
@@ -227,32 +228,38 @@ function smear_force!(f::AbstractArray{T, N}, force, x_world;
     @assert length(force) == D
     @assert length(x_world) == D
     sz = ntuple(d -> size(f, d), D)
-    # Box: ±3ε around x_world (cell-units).
+    # Box: ±3ε around x_world (cell-units). Note the box is built in the
+    # cell-index frame; the per-component face offsets only shift the
+    # kernel by 0.5 cell.
     box_lo = ntuple(d -> max(1, floor(Int, x_world[d] - 3ε)),  D)
     box_hi = ntuple(d -> min(sz[d], ceil(Int, x_world[d] + 3ε)), D)
-    # First pass: compute the kernel sum so we can normalise.
-    invε² = inv(T(ε^2))
-    box   = CartesianIndices(ntuple(d -> box_lo[d]:box_hi[d], D))
-    ksum  = zero(T)
-    @inbounds for I in box
-        r² = zero(T)
-        for d in 1:D
-            δ = (I[d] - T(1.5)) - T(x_world[d])
-            r² += δ*δ
+    inv2ε² = inv(T(2 * ε^2))     # Gaussian variance = ε²
+    box    = CartesianIndices(ntuple(d -> box_lo[d]:box_hi[d], D))
+    # Component-aware deposition. flow.f is FACE-staggered: component d
+    # lives at face d (offset -0.5 from cell centre along axis d only).
+    # For each component d we therefore compute a separate kernel sum
+    # ksum_d and renormalise so the integrated component-d force equals
+    # `force[d]` exactly.
+    @inbounds for d in 1:D
+        ksum_d = zero(T)
+        for I in box
+            r² = zero(T)
+            for k in 1:D
+                # Face d sits at I[k] - (k == d ? 1.0 : 1.5)
+                δ = (I[k] - (k == d ? T(1.0) : T(1.5))) - T(x_world[k])
+                r² += δ*δ
+            end
+            ksum_d += exp(-r² * inv2ε²)
         end
-        ksum += exp(-r² * invε²)
-    end
-    ksum == 0 && return f
-    inv_ks = inv(ksum)
-    # Second pass: deposit the (force / ksum) × kernel into f.
-    @inbounds for I in box
-        r² = zero(T)
-        for d in 1:D
-            δ = (I[d] - T(1.5)) - T(x_world[d])
-            r² += δ*δ
-        end
-        w = exp(-r² * invε²) * inv_ks
-        for d in 1:D
+        ksum_d == 0 && continue
+        inv_ks_d = inv(ksum_d)
+        for I in box
+            r² = zero(T)
+            for k in 1:D
+                δ = (I[k] - (k == d ? T(1.0) : T(1.5))) - T(x_world[k])
+                r² += δ*δ
+            end
+            w = exp(-r² * inv2ε²) * inv_ks_d
             f[I, d] += T(force[d]) * w
         end
     end
@@ -290,8 +297,10 @@ function trilinear_inflow(u_field::AbstractArray{T, N}; offset=nothing) where {T
         # Pull it into cell-index coordinates with offset applied.
         p = (T(xv[1]), T(xv[2]), T(xv[3])) .+ Tuple(off)
         idx = ntuple(d -> p[d] + T(1.5), D)
-        # Clamp to interior so we don't sample ghosts.
-        i = ntuple(d -> clamp(floor(Int, idx[d]), 2, sz[d] - 2), D)
+        # Clamp to interior so we don't sample ghosts. Interior is
+        # `2:sz[d]-1`; with the +1 access in the trilinear stencil the
+        # safe upper bound for `i` is `sz[d]-1`.
+        i = ntuple(d -> clamp(floor(Int, idx[d]), 2, sz[d] - 1), D)
         fr = ntuple(d -> idx[d] - i[d], D)
         # Trilinear over 8 corners (3D only — generic-D is a small loop).
         u = SVector{D, T}(ntuple(D) do d
