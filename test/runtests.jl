@@ -89,4 +89,33 @@ using LiftingSurfaces
         @test i_peak[3] in (9, 10)
     end
 
+    @testset "smear_force! conserves each face-staggered component" begin
+        # Regression test for commit 0a32d54 — the per-component
+        # renormalisation must keep the integrated force exact for
+        # every direction, including the tangential ones whose face
+        # offset is along their own axis.
+        using StaticArrays: SVector
+        sz = (24, 24, 24)
+        for force in (SVector(1f0, 0f0, 0f0),
+                      SVector(0f0, 0.7f0, 0f0),
+                      SVector(0f0, 0f0, -0.3f0),
+                      SVector(0.5f0, -0.5f0, 0.5f0))
+            f = zeros(Float32, sz..., 3)
+            smear_force!(f, force, SVector(12f0, 12f0, 12f0); ε=2.0)
+            for d in 1:3
+                @test isapprox(sum(@view f[:, :, :, d]), force[d]; atol=1e-5)
+            end
+        end
+    end
+
+    @testset "smear_force! 2D" begin
+        using StaticArrays: SVector
+        sz = (24, 24)
+        f = zeros(Float32, sz..., 2)
+        force = SVector(0.5f0, -0.3f0)
+        smear_force!(f, force, SVector(12f0, 12f0); ε=1.8)
+        @test isapprox(sum(@view f[:, :, 1]),  0.5f0; atol=1e-5)
+        @test isapprox(sum(@view f[:, :, 2]), -0.3f0; atol=1e-5)
+    end
+
 end
