@@ -135,6 +135,11 @@ struct BladedRotor{T}
     twist    :: NTuple{2, T}       # (root, tip), radians
     ns       :: Int
     nc       :: Int
+    # Lazy cache for the VortexLattice System (per-process, per-rotor).
+    # The geometry is fixed at construction so System can be built
+    # once and reused across `rotor_forces` calls — saves the bulk of
+    # the per-step allocation in the integrated stack (J5 finding).
+    _system_cache :: Base.RefValue{Any}
 end
 
 function BladedRotor(; N_blades::Int, R::Real, R_hub::Real,
@@ -143,7 +148,8 @@ function BladedRotor(; N_blades::Int, R::Real, R_hub::Real,
     BladedRotor{T}(N_blades, T(R), T(R_hub),
                    (T(chord[1]), T(chord[2])),
                    (T(twist[1]), T(twist[2])),
-                   ns, nc)
+                   ns, nc,
+                   Ref{Any}(nothing))
 end
 
 """
@@ -156,36 +162,39 @@ signs that match its own convention.
 """
 function rotor_forces(rotor::BladedRotor{T}, V∞::Real, Ω::Real;
                       inflow::Union{Nothing, Function}=nothing) where T
-    # One blade along +y at angle 0.
-    xle   = [zero(T), zero(T)]
-    yle   = [T(rotor.R_hub), T(rotor.R)]
-    zle   = [zero(T), zero(T)]
-    chord = [rotor.chord[1], rotor.chord[2]]
-    twist = [rotor.twist[1], rotor.twist[2]]
-    phi   = [zero(T), zero(T)]
-    fc    = fill(x -> zero(T), 2)
-
-    grid_root, ratio = wing_to_grid(xle, yle, zle, chord, twist, phi,
-        rotor.ns, rotor.nc;
-        fc=fc, spacing_s=Cosine(), spacing_c=Uniform(),
-        mirror=false)
-
-    grids  = [grid_root]
-    ratios = [ratio]
-    for k in 1:rotor.N_blades - 1
-        θ = T(2π * k / rotor.N_blades)
-        c, s = cos(θ), sin(θ)
-        g = copy(grid_root)
-        @inbounds for j in 1:size(g, 3), i in 1:size(g, 2)
-            y = g[2, i, j]; z = g[3, i, j]
-            g[2, i, j] = y * c - z * s
-            g[3, i, j] = y * s + z * c
+    # Cache hit? VortexLattice System depends only on the rotor's
+    # geometry (fixed at construction), so we can build it once and
+    # reuse it across calls. Saves the bulk of per-step allocations.
+    if rotor._system_cache[] === nothing
+        # One blade along +y at angle 0.
+        xle   = [zero(T), zero(T)]
+        yle   = [T(rotor.R_hub), T(rotor.R)]
+        zle   = [zero(T), zero(T)]
+        chord = [rotor.chord[1], rotor.chord[2]]
+        twist = [rotor.twist[1], rotor.twist[2]]
+        phi   = [zero(T), zero(T)]
+        fc    = fill(x -> zero(T), 2)
+        grid_root, ratio = wing_to_grid(xle, yle, zle, chord, twist, phi,
+            rotor.ns, rotor.nc;
+            fc=fc, spacing_s=Cosine(), spacing_c=Uniform(),
+            mirror=false)
+        grids  = [grid_root]
+        ratios = [ratio]
+        for k in 1:rotor.N_blades - 1
+            θ = T(2π * k / rotor.N_blades)
+            c, s = cos(θ), sin(θ)
+            g = copy(grid_root)
+            @inbounds for j in 1:size(g, 3), i in 1:size(g, 2)
+                y = g[2, i, j]; z = g[3, i, j]
+                g[2, i, j] = y * c - z * s
+                g[3, i, j] = y * s + z * c
+            end
+            push!(grids,  g)
+            push!(ratios, ratio)
         end
-        push!(grids,  g)
-        push!(ratios, ratio)
+        rotor._system_cache[] = System(grids; ratios=ratios)
     end
-
-    system = System(grids; ratios=ratios)
+    system = rotor._system_cache[]
     Sref   = π * rotor.R^2
     ref    = Reference(Sref, rotor.R, T(2)*rotor.R, [zero(T), zero(T), zero(T)], T(V∞))
     fs     = Freestream(T(V∞), zero(T), zero(T), [T(Ω), zero(T), zero(T)])
