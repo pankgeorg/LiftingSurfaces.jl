@@ -181,4 +181,68 @@ using LiftingSurfaces
         @test isapprox(sum(@view f[:, :, 2]), -0.3f0; atol=1e-5)
     end
 
+    @testset "trilinear_inflow reads a sinusoidal field" begin
+        # A non-trivial spatial pattern: u_y(x) = sin(2π · I[1] / 16).
+        # At I[1]=4 (centre 2.5) we expect sin(π/4) ≈ 0.707. The
+        # trilinear interpolation should hit it within the linear
+        # interpolation error.
+        using StaticArrays: SVector
+        sz = (16, 16, 16)
+        u = zeros(Float32, sz..., 3)
+        for I in CartesianIndices((size(u,1), size(u,2), size(u,3)))
+            u[I, 2] = Float32(sin(2π * (I[1] - 1.5) / 16))
+        end
+        inflow = trilinear_inflow(u)
+        # At cell centre x=2.5 ⇒ I[1]=4 sample
+        v = inflow(SVector(2.5, 8.0, 8.0))
+        @test isapprox(v[2], sin(2π * 2.5 / 16); atol=0.05)
+        # At x=6.0 ⇒ phase π·6/8 = 3π/4
+        v2 = inflow(SVector(6.0, 8.0, 8.0))
+        @test isapprox(v2[2], sin(2π * 6.0 / 16); atol=0.05)
+    end
+
+    @testset "trilinear_inflow clamps out-of-bounds queries" begin
+        # Ask for a position past the array — should not error or
+        # produce NaN. Boundary cell value is the safest defaulta.
+        using StaticArrays: SVector
+        sz = (8, 8, 8)
+        u = zeros(Float32, sz..., 3)
+        u[:, :, :, 1] .= 1f0
+        inflow = trilinear_inflow(u)
+        v = inflow(SVector(-5.0, 50.0, 0.0))
+        @test isfinite(v[1]) && isfinite(v[2]) && isfinite(v[3])
+        @test isapprox(v[1], 1f0; atol=1e-5)  # u_x is uniform = 1 everywhere
+    end
+
+    @testset "Rudder CL scales with accelerated inflow" begin
+        # Mimic the F2 setup: rudder in a region where local axial
+        # flow is 2× freestream. The returned CL should be
+        # substantially larger than the freestream baseline at the
+        # same δ — the in-race amplification observed in F2.
+        using StaticArrays: SVector
+        rudder = Rudder(; chord=2.0, span=3.0, ns=12, nc=6)
+        δ = deg2rad(10.0)
+        r_base = rudder_forces(rudder, δ, 1.0)
+        # Constant inflow perturbation u_x = +1 (so total V_local = 2).
+        boost = xv -> SVector(1.0, 0.0, 0.0)
+        r_boost = rudder_forces(rudder, δ, 1.0; inflow=boost)
+        @test r_boost.CL > 1.5 * r_base.CL    # ≥ 1.5× — matches F2 ~4×
+        @test isfinite(r_boost.CD)
+    end
+
+    @testset "smear_blades! returns identity (3D)" begin
+        # Check the function returns its `f` argument so the
+        # call site can chain or pipeline. Trivial but locks the
+        # mutate-and-return contract.
+        using StaticArrays: SVector
+        sz = (32, 32, 32)
+        f = zeros(Float32, sz..., 3)
+        f_ret = smear_blades!(f, 1.0, 0.2,
+                      SVector(16.0, 16.0, 16.0),
+                      SVector(1.0, 0.0, 0.0),
+                      6.0, 1.0;
+                      N_blades=2, N_sections=3, ε=1.5)
+        @test f_ret === f
+    end
+
 end

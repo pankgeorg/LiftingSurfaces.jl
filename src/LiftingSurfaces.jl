@@ -48,7 +48,7 @@ end
     rudder_forces(rudder, δ, V∞; inflow=nothing) -> NamedTuple
 
 Solve VLM for the given rudder angle δ (radians) at freestream speed
-V∞ in the +x direction. Returns `(; CL, CD, CY, CM, sectional)`:
+V∞ in the +x direction. Returns `(; CL, CD, CY, CM)`:
 
   * `CL`  — lift coefficient (perpendicular to V∞, in z-direction of
             the rudder; side-force on a horizontal-axis ship → yaw)
@@ -56,6 +56,11 @@ V∞ in the +x direction. Returns `(; CL, CD, CY, CM, sectional)`:
   * `CY`  — side force in Body frame (y in VLM Body convention)
   * `CM`  — moment coefficients (3-vector, about the quarter-chord
             reference position set in `Reference(...)`)
+
+All coefficients are normalised to V∞ and reference area `chord·span`,
+even when an `inflow` perturbation is supplied — VortexLattice absorbs
+the inflow into the circulation distribution but keeps the
+normalisation against the freestream reference.
 
 `inflow(x,y,z)` may be passed to perturb the freestream with the
 WaterLily-side ambient flow (e.g. propeller race). It must return an
