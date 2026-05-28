@@ -31,5 +31,10 @@ jobs:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
       - uses: julia-actions/cache@v2
+      # Drop the checked-in Manifest.toml: it was generated against a
+      # different Julia version and references jll packages whose paths
+      # don't match the CI runner. Let Pkg resolve fresh.
+      - name: Reset manifest
+        run: rm -f Manifest.toml
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
