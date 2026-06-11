@@ -35,13 +35,21 @@ struct Rudder{T}
     nc     :: Int
     spacing_s   :: AbstractSpacing
     spacing_c   :: AbstractSpacing
+    # Lazy cache for the VortexLattice System (same pattern as
+    # BladedRotor). The rudder angle δ changes the panel geometry each
+    # call, so the System's *storage* is reused (AIC, Γ, panel arrays)
+    # while the surface panels are rewritten in place via
+    # `update_surface_panels!` — the influence matrix is recomputed by
+    # `steady_analysis!` (its default), so results are unchanged.
+    _system_cache :: Base.RefValue{Any}
 end
 
 function Rudder(; chord::Real, span::Real, ns::Int=16, nc::Int=8,
                   spacing_s::AbstractSpacing=Cosine(),
                   spacing_c::AbstractSpacing=Uniform(),
                   T::Type=Float64)
-    Rudder{T}(T(chord), T(span), ns, nc, spacing_s, spacing_c)
+    Rudder{T}(T(chord), T(span), ns, nc, spacing_s, spacing_c,
+              Base.RefValue{Any}(nothing))
 end
 
 """
@@ -84,7 +92,18 @@ function rudder_forces(rudder::Rudder{T}, δ::Real, V∞::Real;
         rudder.ns, rudder.nc;
         fc=fc, spacing_s=rudder.spacing_s, spacing_c=rudder.spacing_c,
         mirror=false)
-    system = System([grid]; ratios=[ratio])
+    if rudder._system_cache[] === nothing
+        rudder._system_cache[] = System([grid]; ratios=[ratio])
+    else
+        # Reuse the System storage. `steady_analysis!` regenerates the
+        # surface panels from `system.grids` on every call
+        # (analyses.jl: update_surface_panels!(surfaces[i], grids[i])),
+        # so copying the δ-dependent grid in is all an update needs.
+        sys = rudder._system_cache[]
+        sys.grids[1] .= grid
+        sys.ratios[1] .= ratio
+    end
+    system = rudder._system_cache[]
 
     Sref = rudder.span * rudder.chord
     ref  = Reference(Sref, rudder.chord, rudder.span,
