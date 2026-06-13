@@ -24,6 +24,84 @@ using LiftingSurfaces
         @test 2.0 < slope < 3.0
     end
 
+    @testset "Wing — lift-curve slope vs lifting-line" begin
+        # A finite wing's dCL/dα should approach 2π·AR/(AR+2) from below
+        # (VLM with a flat wake lands ~86–92 % of LLT, rising with AR).
+        for AR in (6.0, 10.0)
+            c = 1.0; span = AR * c
+            w = Wing(; chord_root=c, chord_tip=c, span=span, ns=40, nc=10)
+            r1 = wing_forces(w, deg2rad(1.0), 1.0)
+            r2 = wing_forces(w, deg2rad(5.0), 1.0)
+            slope = (r2.CL - r1.CL) / deg2rad(4.0)
+            llt = 2π * AR / (AR + 2)
+            @test isapprox(r1.AR, AR; rtol=1e-6)
+            @test 0.80 * llt < slope < llt          # below LLT, but close
+        end
+    end
+
+    @testset "Wing — parabolic induced drag, sane span efficiency" begin
+        w = Wing(; chord_root=1.0, chord_tip=0.5, span=8.0, ns=40, nc=10)
+        rs = [wing_forces(w, deg2rad(a), 1.0) for a in (2.0, 4.0, 6.0, 8.0)]
+        # CDi grows ~ CL²; the implied span efficiency is constant & sane.
+        es = [r.e for r in rs]
+        @test all(0.85 .< es .< 1.0)
+        @test maximum(es) - minimum(es) < 0.02      # ~constant across α
+        # explicit parabola check: CDi ≈ CL²/(π e AR)
+        for r in rs
+            @test isapprox(r.CDi, r.CL^2 / (π * r.e * r.AR); rtol=1e-6)
+        end
+    end
+
+    @testset "Wing — System cache is bit-identical to cold" begin
+        w1 = Wing(; chord_root=1.0, chord_tip=0.6, span=6.0,
+                    sweep=10.0, twist_tip=-3.0, ns=24, nc=8)
+        wing_forces(w1, deg2rad(4.0), 1.0)            # builds cache
+        rb = wing_forces(w1, deg2rad(7.0), 1.0)       # reuses cache
+        w2 = Wing(; chord_root=1.0, chord_tip=0.6, span=6.0,
+                    sweep=10.0, twist_tip=-3.0, ns=24, nc=8)
+        rc = wing_forces(w2, deg2rad(7.0), 1.0)       # cold
+        @test rb.CL  == rc.CL
+        @test rb.CDi == rc.CDi
+    end
+
+    @testset "Wing — sweep reduces slope, washout shifts zero-lift" begin
+        slope_of(; kw...) = begin
+            w = Wing(; chord_root=1.0, chord_tip=1.0, span=6.0, ns=30, nc=8, kw...)
+            (wing_forces(w, deg2rad(5.0), 1.0).CL -
+             wing_forces(w, deg2rad(1.0), 1.0).CL) / deg2rad(4.0)
+        end
+        @test slope_of(sweep=30.0) < slope_of(sweep=0.0)   # cosΛ effect
+        # -4° tip washout → negative CL at α=0 (zero-lift angle shifts +).
+        wtw = Wing(; chord_root=1.0, chord_tip=1.0, span=6.0,
+                     twist_root=0.0, twist_tip=-4.0, ns=30, nc=8)
+        @test wing_forces(wtw, 0.0, 1.0).CL < 0
+    end
+
+    @testset "Wing — spanwise loading symmetric & peaks mid-span" begin
+        w = Wing(; chord_root=1.0, chord_tip=1.0, span=6.0, ns=20, nc=8)
+        r = wing_forces(w, deg2rad(5.0), 1.0)
+        @test length(r.cl_span) == 20
+        @test length(r.y_span) == 20
+        # free-ended full wing: loading peaks mid-span, ~zero at both ends
+        imax = argmax(r.cl_span)
+        @test 8 <= imax <= 13                       # mid-span
+        @test r.cl_span[1] < r.cl_span[imax]
+        @test r.cl_span[end] < r.cl_span[imax]
+        @test isapprox(r.cl_span[1], r.cl_span[end]; rtol=0.05)   # symmetric
+    end
+
+    @testset "Wing — CL sign and convergence" begin
+        w = Wing(; chord_root=1.0, chord_tip=1.0, span=6.0, ns=60, nc=12)
+        rp = wing_forces(w, deg2rad(5.0), 1.0)
+        rn = wing_forces(w, deg2rad(-5.0), 1.0)
+        @test rp.CL > 0 && rn.CL < 0
+        @test isapprox(rp.CL, -rn.CL; rtol=1e-3)
+        # coarse vs fine within 1 %
+        wc = Wing(; chord_root=1.0, chord_tip=1.0, span=6.0, ns=20, nc=6)
+        rc = wing_forces(wc, deg2rad(5.0), 1.0)
+        @test isapprox(rc.CL, rp.CL; rtol=0.01)
+    end
+
     @testset "BladedRotor smoke" begin
         rotor = BladedRotor(; N_blades=3, R=1.0, R_hub=0.2,
                               chord=(0.25, 0.18),

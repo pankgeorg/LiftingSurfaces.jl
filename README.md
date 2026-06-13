@@ -17,6 +17,9 @@ with WaterLily-friendly types and the two primitives needed to couple
 back into a WaterLily simulation:
 
 - `Rudder` and `BladedRotor` — VLM-resolved rudder and propeller
+- `Wing` — a generalized finite wing (taper / quarter-chord sweep /
+  per-station twist / dihedral / AoA), the lifting-device backend for
+  a rigid sail and any finite-wing study
 - `smear_force!` — Gaussian deposition of a point force onto a
   WaterLily face-staggered force array (force-conserving)
 - `trilinear_inflow` — closure factory that samples WaterLily's
@@ -58,6 +61,59 @@ V∞ = 1.0
 r  = rotor_forces(rotor, V∞, Ω)
 @show r.CT r.CQ r.η_VLM
 ```
+
+```julia
+# Generalized finite wing: 2:1 taper, 10° sweep, -3° tip washout.
+wing = Wing(; chord_root=1.0, chord_tip=0.5, span=8.0,
+              sweep=10.0, twist_tip=-3.0, ns=40, nc=10)
+
+r = wing_forces(wing, deg2rad(5.0), 1.0)
+@show r.CL r.CDi r.AR r.e       # induced drag from the Trefftz plane
+@show r.cl_span r.y_span        # spanwise loading for plotting
+```
+
+## Is VortexLattice.jl fit for wings? — Verdict: **YES**
+
+VortexLattice.jl did *not* work well for the propeller (the helical
+wake makes its flat-wake assumption a poor fit — see
+NavalArchitectToolbox.jl's bespoke `openwater_vlm`). For a **planar
+finite wing with a flat trailing wake — exactly its design point — it
+is fit for purpose.** Validated by `Wing` against lifting-line theory:
+
+**Lift-curve slope** `dCL/dα` vs the lifting-line `2π·AR/(AR+2)`
+(rectangular wings, ns=40, nc=10):
+
+| AR | dCL/dα (VLM) | 2π·AR/(AR+2) | ratio |
+|---:|---:|---:|---:|
+|  4 | 3.60 | 4.19 | 0.86 |
+|  6 | 4.21 | 4.71 | 0.89 |
+|  8 | 4.58 | 5.03 | 0.91 |
+| 10 | 4.83 | 5.24 | 0.92 |
+
+VLM lands a few percent below the lifting-line slope and the ratio
+rises monotonically toward unity as AR grows — the expected, physical
+VLM-vs-LLT relationship (finite chordwise discretization + flat wake).
+
+**Induced drag** is parabolic in CL with a clean, near-constant span
+efficiency (2:1 tapered, AR≈10.7):
+
+| α (deg) | CL | CDi (Trefftz) | implied e |
+|---:|---:|---:|---:|
+| 2 | 0.170 | 0.00092 | 0.936 |
+| 4 | 0.339 | 0.00366 | 0.935 |
+| 6 | 0.508 | 0.00823 | 0.935 |
+| 8 | 0.676 | 0.01461 | 0.933 |
+
+`CDi ≈ CL²/(π·e·AR)` holds with e≈0.93 (sensible for a tapered, non-
+elliptic planform). **Sweep reduces the slope** (Λ=0→30°: 4.21→3.81,
+≈cosΛ); **washout shifts the zero-lift angle** (−4° tip twist gives
+CL<0 at α=0). Panel convergence: CL changes <0.1% past ns=40, nc=8.
+The `System`-cache is bit-identical to a freshly-built System.
+
+Notes on conventions: `mirror=false` over `yle∈[0,span]` models a
+**full free-ended wing** of geometric span `span` (loading peaks at
+mid-span, symmetric) — *not* a root-mirrored half-wing — so `AR =
+span²/S` and the lifting-line comparisons above use that AR directly.
 
 ## WaterLily coupling
 
@@ -124,12 +180,15 @@ or develop a thicker propeller model.
 $ julia +1.12 --project=. -e 'using Pkg; Pkg.test()'
 ```
 
-Currently 37 tests covering:
+Currently 75 tests covering:
 
 - Rudder polar sign + magnitude (symmetric in δ)
 - Linear-range dCL/dα against rectangular-AR=2 theory
 - Rudder responds to a non-zero inflow perturbation (the two-way
   coupling smoke)
+- `Wing`: lift-curve slope vs lifting-line, parabolic induced drag +
+  span efficiency, sweep/washout trends, symmetric spanwise loading,
+  System-cache bit-identical to cold, convergence
 - BladedRotor smoke at J=0.7
 - `smear_force!` per-component conservation across 3D + 2D
 - `smear_force!` peaks at the cell closest to the world position

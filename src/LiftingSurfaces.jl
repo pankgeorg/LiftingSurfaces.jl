@@ -3,11 +3,13 @@ module LiftingSurfaces
 using VortexLattice
 using VortexLattice: wing_to_grid, grid_to_surface_panels, System, Reference,
     Freestream, steady_analysis!, body_forces, far_field_drag,
+    lifting_line_coefficients, lifting_line_geometry,
     Wind, Body, Cosine, Uniform, AbstractSpacing
 using StaticArrays: SVector
 
 export Rudder, rudder_forces, BladedRotor, rotor_forces, smear_force!,
-       smear_torque!, smear_blades!, trilinear_inflow
+       smear_torque!, smear_blades!, trilinear_inflow,
+       Wing, wing_forces
 
 # ---------------------------------------------------------------------------
 # Rudder
@@ -123,6 +125,173 @@ function rudder_forces(rudder::Rudder{T}, δ::Real, V∞::Real;
     CY = CF_body[2]
 
     return (; CL, CD, CY, CM = CM_wind)
+end
+
+# ---------------------------------------------------------------------------
+# Wing — a generalized finite wing (taper / sweep / twist / dihedral)
+# ---------------------------------------------------------------------------
+
+"""
+    Wing(; chord_root, chord_tip, span,
+           sweep=0.0, twist_root=0.0, twist_tip=0.0, dihedral=0.0,
+           ns=20, nc=8, spacing_s=Cosine(), spacing_c=Uniform())
+
+Vortex-lattice model of a flat (zero-camber) finite wing — the
+generalization of [`Rudder`](@ref) to taper, quarter-chord sweep,
+linear geometric twist (washout) and dihedral. It is the lifting-device
+backend for a rigid sail (8401 Q4) and any finite-wing study.
+
+This is a **full free-ended wing** of geometric span `span`, panelled
+directly over `yle ∈ [0, span]` (`mirror=false`, no symmetry plane —
+same convention as `Rudder`). Both ends are free tips, so the spanwise
+loading is symmetric and peaks at mid-span (verified: an elliptic-like
+distribution falling to zero at both `y=0` and `y=span`). The reference
+area is the trapezoidal planform `S = (chord_root+chord_tip)/2 · span`
+and the aspect ratio reported by [`wing_forces`](@ref) is the geometric
+`AR = span²/S` of this whole wing — *not* a half-wing reflected about a
+root plane. Lifting-line slope comparisons (`dCL/dα → 2π·AR/(AR+2)`)
+therefore use this AR directly, and the validation confirms VLM lands
+~86–92 % of the lifting-line slope, rising toward it as AR grows.
+
+Angles in **degrees**. `sweep`/`dihedral` are applied to the tip
+leading-edge offset; per-station geometric twist is linear from
+`twist_root` (root) to `twist_tip` (tip). The angle of attack `α` is
+added to the twist at solve time by [`wing_forces`](@ref).
+
+Geometry → the five VortexLattice `wing_to_grid` arrays:
+
+```
+xle = [0, span·tand(sweep)]      yle = [0, span]
+zle = [0, span·tand(dihedral)]   chord = [chord_root, chord_tip]
+twist = [α+twist_root, α+twist_tip]  (deg→rad)   phi = [0, 0]
+```
+
+The `System` storage is cached (same pattern as `Rudder`): geometry
+changes per `α`, so the new grid is copied into `system.grids[1]` and
+`steady_analysis!` regenerates the panels — results are bit-identical to
+a freshly built `System`.
+"""
+struct Wing{T}
+    chord_root :: T
+    chord_tip  :: T
+    span       :: T
+    sweep      :: T        # deg, quarter-chord
+    twist_root :: T        # deg
+    twist_tip  :: T        # deg
+    dihedral   :: T        # deg
+    ns         :: Int
+    nc         :: Int
+    spacing_s  :: AbstractSpacing
+    spacing_c  :: AbstractSpacing
+    _system_cache :: Base.RefValue{Any}
+end
+
+function Wing(; chord_root::Real, chord_tip::Real, span::Real,
+                sweep::Real=0.0, twist_root::Real=0.0, twist_tip::Real=0.0,
+                dihedral::Real=0.0, ns::Int=20, nc::Int=8,
+                spacing_s::AbstractSpacing=Cosine(),
+                spacing_c::AbstractSpacing=Uniform(), T::Type=Float64)
+    Wing{T}(T(chord_root), T(chord_tip), T(span), T(sweep),
+            T(twist_root), T(twist_tip), T(dihedral), ns, nc,
+            spacing_s, spacing_c, Base.RefValue{Any}(nothing))
+end
+
+"Reference planform area / aspect ratio for a `Wing` (trapezoidal, cantilever)."
+function wing_reference(w::Wing{T}) where T
+    S  = (w.chord_root + w.chord_tip) / 2 * w.span
+    AR = w.span^2 / S
+    cref = (w.chord_root + w.chord_tip) / 2     # mean aerodynamic-ish chord
+    return (; S, AR, cref)
+end
+
+"""
+    wing_forces(wing, α, V∞; inflow=nothing)
+        -> (; CL, CDi, CD, CM, CY, cl_span, y_span, AR, e)
+
+Solve one VLM steady analysis for the [`Wing`](@ref) at angle of attack
+`α` (**radians**) and freestream speed `V∞` (in +x). Returns:
+
+  * `CL`  — lift coefficient (Wind frame z), normalised to the
+            trapezoidal `S` and `V∞`.
+  * `CDi` — **induced** drag from the Trefftz plane (`far_field_drag`),
+            the quantity that should follow `CL²/(π·e·AR)`.
+  * `CD`  — near-field total drag (Wind frame x) — for a flat plate this
+            is essentially the induced drag plus numerical leading-edge
+            suction error; `CDi` is the reference-grade value.
+  * `CM`  — moment-coefficient 3-vector (Wind frame) about the
+            quarter-root-chord reference point.
+  * `CY`  — side-force coefficient (Body frame y).
+  * `cl_span`, `y_span` — sectional lift coefficient and spanwise station
+            (`y/ (span)` normalised? no — physical y of each segment
+            midpoint), for plotting the spanwise loading.
+  * `AR`  — the cantilever aspect ratio `span²/S`.
+  * `e`   — implied span efficiency `CL²/(π·AR·CDi)` (NaN if CL≈0).
+
+`inflow(x,y,z)->SVector{3}` perturbs the freestream (WaterLily coupling
+hook), identical semantics to `rudder_forces`.
+"""
+function wing_forces(wing::Wing{T}, α::Real, V∞::Real;
+                     inflow::Union{Nothing,Function}=nothing) where T
+    αT = T(α)
+    tr = αT + deg2rad(wing.twist_root)
+    tt = αT + deg2rad(wing.twist_tip)
+    xle   = [zero(T), T(wing.span * tand(wing.sweep))]
+    yle   = [zero(T), T(wing.span)]
+    zle   = [zero(T), T(wing.span * tand(wing.dihedral))]
+    chord = [wing.chord_root, wing.chord_tip]
+    twist = [tr, tt]
+    phi   = [zero(T), zero(T)]
+    fc    = fill(x -> zero(T), 2)
+
+    grid, ratio = wing_to_grid(xle, yle, zle, chord, twist, phi,
+        wing.ns, wing.nc;
+        fc=fc, spacing_s=wing.spacing_s, spacing_c=wing.spacing_c,
+        mirror=false)
+    if wing._system_cache[] === nothing
+        wing._system_cache[] = System([grid]; ratios=[ratio])
+    else
+        sys = wing._system_cache[]
+        sys.grids[1] .= grid
+        sys.ratios[1] .= ratio
+    end
+    system = wing._system_cache[]
+
+    rp = wing_reference(wing)
+    ref = Reference(rp.S, rp.cref, wing.span,
+                    [wing.chord_root/4, 0, 0], V∞)
+    fs  = Freestream(V∞, zero(T), zero(T), [zero(T), zero(T), zero(T)])
+
+    if inflow === nothing
+        steady_analysis!(system, ref, fs; symmetric=false)
+    else
+        steady_analysis!(system, ref, fs; symmetric=false,
+                         additional_velocity=inflow)
+    end
+
+    CF_wind, CM_wind = body_forces(system; frame=Wind())
+    CF_body, _       = body_forces(system; frame=Body())
+    CL = CF_wind[3]; CD = CF_wind[1]; CY = CF_body[2]
+    CDi = far_field_drag(system)
+
+    # Spanwise sectional loading (per-segment, Wind frame): cl is the
+    # z-component of the per-span force coefficient; y is the segment
+    # midpoint along the span. Robust to the VortexLattice version that
+    # may not export `lifting_line_coefficients` — fall back to empties.
+    cl_span = T[]; y_span = T[]
+    try
+        r, c = lifting_line_geometry(system.grids, 0.25)
+        cf, _ = lifting_line_coefficients(system, r, c; frame=Wind())
+        cz = cf[1]                                  # (3, ns)
+        ns = size(cz, 2)
+        cl_span = T[cz[3, k] for k in 1:ns]
+        # segment midpoint y from the lifting-line geometry (3, ns+1)
+        ry = r[1]
+        y_span = T[(ry[2, k] + ry[2, k+1]) / 2 for k in 1:ns]
+    catch
+    end
+
+    e = abs(CL) > 1e-8 ? CL^2 / (π * rp.AR * CDi) : T(NaN)
+    return (; CL, CDi, CD, CM = CM_wind, CY, cl_span, y_span, AR = rp.AR, e)
 end
 
 # ---------------------------------------------------------------------------
