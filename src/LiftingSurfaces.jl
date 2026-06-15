@@ -139,7 +139,7 @@ end
 Vortex-lattice model of a flat (zero-camber) finite wing — the
 generalization of [`Rudder`](@ref) to taper, quarter-chord sweep,
 linear geometric twist (washout) and dihedral. It is the lifting-device
-backend for a rigid sail (8401 Q4) and any finite-wing study.
+backend for a rigid sail and any finite-wing study.
 
 This is a **full free-ended wing** of geometric span `span`, panelled
 directly over `yle ∈ [0, span]` (`mirror=false`, no symmetry plane —
